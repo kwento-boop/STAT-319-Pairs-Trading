@@ -1,0 +1,332 @@
+---
+title: "Pairs Trading Supplementary Material"
+author: "Justin Byun"
+date: "3/31/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Creating the downloadPriceDF function
+downloadPriceDF <- function(stock, start = 2010, nyears = 1) {
+  startDate = paste(as.character(start), "01", "01", sep = "-")
+  endYear <- start + nyears
+  endDate = paste(as.character(endYear), "01", "01", sep = "-")
+  
+  stockData <- BatchGetSymbols(tickers = stock, first.date = startDate, 
+                               last.date = endDate)
+  stockPrices <- stockData$df.tickers
+  stockDatePrices <- stockPrices %>%
+    select(ref.date, price.adjusted)
+  
+  return(stockDatePrices)
+}
+```
+
+```{r}
+# Creating the downloadStockPairDF() function
+downloadStockPairDF <- function(stock1, stock2, start = 2010, nyears = 1) {
+  firstStockPricesDate <- downloadPriceDF(stock1, start, nyears)
+  secondStockPricesDate <- downloadPriceDF(stock2, start, nyears)
+  if(!identical(firstStockPricesDate$ref.date, secondStockPricesDate$ref.date)) {
+    firstStockPricesDate <- firstStockPricesDate %>%
+      filter(!is.na(match(firstStockPricesDate$ref.date, 
+                          secondStockPricesDate$ref.date)))
+    secondStockPricesDate <- secondStockPricesDate %>%
+      filter(!is.na(match(secondStockPricesDate$ref.date, 
+                          firstStockPricesDate$ref.date)))
+  }
+  
+  date <- firstStockPricesDate$ref.date
+  stock1 <- firstStockPricesDate$price.adjusted
+  stock2 <- secondStockPricesDate$price.adjusted
+  ratio <- (firstStockPricesDate$price.adjusted)/
+    (secondStockPricesDate$price.adjusted)
+  
+  stockPairDF <- data.frame(stock1, stock2, ratio)
+  return(stockPairDF)
+}
+```
+
+```{r}
+# Creating the plotStocks() function
+plotStocks <- function(stocksDF) {
+  stocksDF %>%
+    ggplot(aes(1:nrow(stocksDF))) +
+    geom_line(aes(y = stock1), color = "red") +
+    geom_line(aes(y = stock2), color = "blue") +
+    labs(
+      x = "Trading Day",
+      y = "Adjusted Closing Prices",
+      title = "Adjusted Closing Prices for Stocks 1 and 2 over Time "
+    ) +
+    theme_minimal()
+}
+```
+
+```{r}
+# Creating the plotRatio() function
+plotRatio <- function(stocksDF, k = 1) {
+  ratioMean <- mean(stocksDF$ratio)
+  ratioSD <- sd(stocksDF$ratio)
+  
+  stocksDF %>%
+    ggplot(aes(x = 1:nrow(stocksDF), y = ratio)) +
+    geom_line() +
+    geom_hline(yintercept = ratioMean, col = 'blue') +
+    geom_hline(yintercept = ratioMean + k*ratioSD, col = 'red', 
+               linetype = 'dashed') +
+    geom_hline(yintercept = ratioMean - k*ratioSD, col = 'red', 
+               linetype = 'dashed') +
+    theme_minimal() +
+    labs(
+      y = "Stocks Ratio",
+      x = "Trading Day",
+      title = "Stocks Ratio over Trading Days"
+    )
+}
+```
+
+```{r}
+# Creating findPositions()
+findPositions <- function(ratio, m, s, k = 1) {
+  positions <- list()  
+  upper <- m + k*s
+  lower <- m - k*s
+  numRatios <- length(ratio)
+  current <- 1
+  vectorOfDays <- 1:numRatios
+
+  # Open position when ratio exceeds upper
+  # Maintain "current" day we're looking at and moving forward from
+  while(current < numRatios) {# ... the current day is still less than n
+    # see if there's every a day (greater than current day) 
+    # when we would open a new pair of positions
+    
+    # we will ONLY open positions on days >= current
+    # possibleOpenDays ((ratio > upper) | (ratio < lower)) & (X)
+    # Creating dataframe containing the ratios and trading days of the stocks 
+    # compared
+    possibleOpenDays <- ((ratio > upper | ratio < lower) & vectorOfDays >= 
+                           current)
+
+    if (any(possibleOpenDays)) {
+      openDay <- which(possibleOpenDays)[1]
+      highLow <- ifelse(ratio > m, 1, 0)[openDay]
+      openDaysWithHighRatio <- which(ratio > upper & vectorOfDays >= current)
+      openDaysWithLowRatio <- which(ratio < lower & vectorOfDays >= current)
+      
+      if (openDay %in% openDaysWithHighRatio) {
+        possibleCloseDays  <- (ratio < m & vectorOfDays > openDay)
+        if (any(possibleCloseDays)) {
+          closeDay <- which(possibleCloseDays)[1]
+        }
+          else {
+            closeDay <- numRatios
+        }
+      } else if (openDay %in% openDaysWithLowRatio) {
+          possibleCloseDays <- (ratio > m & vectorOfDays > openDay)
+          if (any(possibleCloseDays)) {
+            closeDay <- which(possibleCloseDays)[1]
+          } else {
+            closeDay <- numRatios
+          }
+      }
+    }
+    else {
+      return (list())
+    }
+    
+    
+    # record when we would close those positions (closeDay)
+    # consider when it crosses the mean (when we close the position)
+    
+    # store(openDay, closeDay, highLow) into the positions list
+    positions[[length(positions) + 1]] <- c(as.integer(openDay), 
+                                            as.integer(closeDay), highLow)
+    # finally, update "current" since now, we're only looking forward from 
+    # closeDay
+    current = closeDay + 1
+  }
+  return(positions)
+}
+```
+
+```{r}
+# Creating addPositions()
+addPositions <- function(stocksDF, ratio, positions, k = 1) {
+  ratios <- c(stocksDF$ratio)
+  plot(ratios, type = "l", xlab = "Trading Day", ylab = "Stock Ratios", 
+       main = "Stock Ratio by Trading Day")
+  abline(h = mean(ratios), lty = "dashed", col = "blue")
+  abline(h = mean(ratios) + k*sd(ratios), lty = "dashed", col = "red")
+  abline(h = mean(ratios) - k*sd(ratios), lty = "dashed", col = "red")
+  for (position in positions) {
+    points(x = position[1], y = ratio[position[1]], col = 'green', pch = 19)
+    points(x = position[2], y = ratio[position[2]], col = 'purple', pch = 19)
+  }
+}
+```
+
+```{r}
+positionProfit <- function(stocksDF, positions, net = TRUE) {
+  totalProfits = 0
+  individualProfits <- c()
+  for (position in positions) {
+    shares1 <- 1/stocksDF$stock1[position[1]]
+    shares2 <- 1/stocksDF$stock2[position[1]]
+    if (position[3] == 1) {
+      profit1 <- shares1*stocksDF$stock1[position[1]] - 
+        shares1*stocksDF$stock1[position[2]]
+      profit2 <- -1*shares2*stocksDF$stock2[position[1]] + 
+        shares2*stocksDF$stock2[position[2]]
+      fees <- 0.003 * (1 + 1 + abs(profit1) + abs(profit2))
+      positionProfit <- profit1 + profit2 - fees
+      individualProfits <- c(individualProfits, positionProfit)
+      totalProfits <- totalProfits + positionProfit
+    }
+    else if (position[3] == 0) {
+      profit1 <- -1*shares1*stocksDF$stock1[position[1]] + 
+        shares1*stocksDF$stock1[position[2]]
+      profit2 <- shares2*stocksDF$stock2[position[1]] - 
+        shares2*stocksDF$stock2[position[2]]
+      fees <- 0.003 * (1 + 1 + abs(profit1) + abs(profit2))
+      positionProfit <- profit1 + profit2 - fees
+      individualProfits <- c(individualProfits, positionProfit)
+      totalProfits <- totalProfits + positionProfit
+    }
+  }
+  if (net == TRUE){
+    return (totalProfits)
+  } else {
+    return (individualProfits)
+  }
+}
+```
+
+```{r}
+# Creating the findOptimalK() function
+findOptimalK <- function(stocksDF, plot = FALSE) {
+  ## Creating two accumulator variables, vectorOfprofits and 
+  ## vectorOfPositionsLists
+  ## vectorOfProfits will be appended to by positionProfit()
+  ## vectorOfPositionsLists will be appended to by findPosition() 
+  ## for element in kvalues
+  vectorOfProfits <- c()
+  kmax <- max(abs(stocksDF$ratio - mean(stocksDF$ratio)))/sd(stocksDF$ratio)
+  kvalues <- seq(0, kmax, length = 100)
+  ## Process of appending to vectorOfPositionsLists through for loop
+  for (k in kvalues) {
+    position <- findPositions(stocksDF$ratio, m = mean(stocksDF$ratio), 
+                              s = sd(stocksDF$ratio), k = k)
+    vectorOfProfits <- c(vectorOfProfits, positionProfit(stocksDF, position))
+  }
+  ## Using which() to find the index of the maximum profit in vectorOf Profits; 
+  ## that same index will be used to find the optimal K in kvalues 
+  ## (hence the name, indexOfOptimalK)
+  indexOfOptimalK <- which(vectorOfProfits == max(vectorOfProfits))
+  kValuesAndProfitsDF <- data.frame(kvalues = kvalues, profits = vectorOfProfits)
+  if (plot == TRUE) {
+    ## Creating dataframe with kvalues and vectorOfProfits, since they should 
+    ## have the same number of elements
+    kValuesAndProfitsDF %>%
+      ggplot(aes(x = kvalues, y = profits)) +
+      geom_line() +
+      geom_vline(xintercept = kvalues[indexOfOptimalK], linetype = 'dashed', 
+                 color = 'red')
+  }
+  return (kvalues[indexOfOptimalK])
+}
+```
+
+```{r}
+# Creating the evaluatePairsTrading() function
+evaluatePairsTrading <- function(stocksDF, trainingFrac = 0.5, plot = FALSE){
+  lenStocksDF <- nrow(stocksDF)
+  trainingSetLength <- round(trainingFrac * lenStocksDF, digits = 0)
+  trainingSet <- stocksDF[1:trainingSetLength,]
+  testSet <- stocksDF[(trainingSetLength+1):lenStocksDF,]
+  m <- mean(trainingSet$ratio)
+  s <- sd(trainingSet$ratio)
+  k <- findOptimalK(trainingSet, plot = FALSE)
+  positions <- findPositions(testSet$ratio, m, s, k)
+  if (plot == TRUE) {
+    plotRatio(testSet, k)
+  }
+  return (positionProfit(testSet, positions, net = TRUE))
+}
+```
+
+```{r}
+# Creating the simulateStockPair() function
+simulateStockPair <- function(n = 1000, sigma1 = 1, sigma2 = 1, rho = 1,
+                              psi = 0, b1 = 0, b2 = 0, plot = FALSE) {
+  # Creating x1, x2 vectors that will contain all x1 and x2 values, and also 
+  # putting initial values inside them
+  x1Values <- c(5)
+  x2Values <- c(3)
+  # Creating initial values for a1 and a2
+  a1 <- 35
+  a2 <- 30
+  # Initializing the t variable that will be used in the formula for the stock 
+  # prices
+  t <- c(1:n)
+  for(i in 1:(n-1)) {
+    x1Values <- c(x1Values, rho*x1Values[length(x1Values)] + 
+                    (1-rho)*psi*x2Values[length(x2Values)] + 
+                    rnorm(1, mean = 0, sd = sigma1))
+    x2Values <- c(x2Values, rho*x2Values[length(x2Values)] + 
+                    (1-rho)*psi*x1Values[length(x1Values)-1] + 
+                    rnorm(1, mean = 0, sd = sigma2))
+  }
+  stock1 <- a1 + b1*t + x1Values
+  stock2 <- abs(a2 + b2*t + x2Values)
+  ratio <- stock1/stock2
+  stocksDF <- data.frame(stock1, stock2, ratio)
+  if (plot == TRUE) {
+    plotStocks(stocksDF)
+  }
+  return(stocksDF)
+}
+```
+
+```{r}
+simulateDistribution <- function(nrep = 100, returnCorrelation = FALSE, 
+                                 n = 1000, sigma1 = 1, sigma2 = 1, rho = 1, 
+                                 psi = 0, b1 = 0, b2 = 0) {
+  # Initializing the vector containing nrep realizations of the net profit
+  distribution <- c()
+  if (returnCorrelation == FALSE) {
+    distribution <- c(distribution, 
+                      replicate(nrep, 
+                                distributionProfitHelper(n, sigma1, sigma2, rho,
+                                                         psi, b1, b2)))
+  }
+  else {
+    distribution <- c(distribution, 
+                      replicate(nrep, distributionCorHelper(n, sigma1, sigma2, 
+                                                            rho, psi, b1, b2)))
+  }
+  return (distribution)
+}
+
+## Creating helper functions for simulateDistribution()
+distributionCorHelper <- function(n = 1000, sigma1 = 1, sigma2 = 1, rho = 1,
+                                  psi = 0, b1 = 0, b2 = 0) {
+  stocksDF <- simulateStockPair(n, sigma1, sigma2, rho, psi, b1, b2, 
+                                plot = FALSE)
+  priceCor <- cor(stocksDF$stock1, stocksDF$stock2)
+}
+
+distributionProfitHelper <- function(n = 1000, sigma1 = 1, sigma2 = 1, rho = 1,
+                                     psi = 0, b1 = 0, b2 = 0) {
+   stocksDF <- simulateStockPair(n, sigma1, sigma2, rho, psi, b1, b2, 
+                                 plot = FALSE)
+   positions <- findPositions(stocksDF$ratio, mean(stocksDF$ratio), 
+                              sd(stocksDF$ratio), k = 1)
+   netProfit <- positionProfit(stocksDF, positions, net = TRUE)
+}
+```
